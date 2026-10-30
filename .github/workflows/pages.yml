@@ -26,7 +26,7 @@ jobs:
       - name: Assemble site
         run: |
           mkdir _site
-          cp -r index.html src _site/
+          cp -r index.html site.webmanifest src assets _site/
 
       - uses: actions/configure-pages@v5
 

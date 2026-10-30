@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Afterglow</title>
   <meta name="description" content="An endless orchestral and choral score, composed live in your browser.">
+  <meta name="theme-color" content="#05070d">
+  <link rel="icon" href="assets/favicon.ico" sizes="48x48">
+  <link rel="icon" href="assets/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="icon" href="assets/icon-192.png" type="image/png" sizes="192x192">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="manifest" href="site.webmanifest">
+  <meta property="og:title" content="Afterglow">
+  <meta property="og:description" content="An endless orchestral and choral score, composed live in your browser.">
+  <meta property="og:image" content="https://alexbrazier.github.io/afterglow/assets/icon-512.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
@@ -31,6 +40,8 @@
       max-width: 880px; margin: 0 auto; padding: 48px 16px 64px;
       display: flex; flex-direction: column; gap: 20px;
     }
+    header .brand { display: flex; align-items: center; gap: 16px; }
+    header .brand img { width: 56px; height: 56px; flex: none; filter: drop-shadow(0 4px 18px rgba(255, 120, 60, 0.25)); }
     header h1 { font: 500 52px/1 'Cormorant Garamond', serif; letter-spacing: 0.02em; margin: 0; }
     header p { margin: 6px 0 0; color: var(--muted); }
     .panel {
@@ -96,6 +107,7 @@
     #loading .bar > div { height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
     @media (max-width: 560px) {
       header h1 { font-size: 40px; }
+      header .brand img { width: 44px; height: 44px; }
       .now { grid-template-columns: 1fr; }
       .chords { text-align: left; }
       .status { margin-left: 0; width: 100%; }
@@ -109,7 +121,7 @@
   <canvas id="sky"></canvas>
   <main>
     <header>
-      <h1>Afterglow</h1>
+      <div class="brand"><img src="assets/icon-192.png" alt=""><h1>Afterglow</h1></div>
       <p>An endless orchestral &amp; choral score, composed live in your browser.</p>
     </header>
 
