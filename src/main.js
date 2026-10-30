@@ -150,10 +150,47 @@ function prevJourney() {
   else jump(composer.history[i - 1], 0);
 }
 
+// ---------- iOS silent switch ----------
+
+// iOS plays Web Audio in the "ambient" audio session, which the ring/silent switch mutes.
+// Asking for a "playback" session (Safari 17+), and on iOS also holding a silent looping
+// <audio> element (which puts the page in the playback session on older versions), makes
+// it behave like a music app instead. Both must start inside the Play tap.
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+let keepAlive = null;
+
+function silentWavUrl() {
+  const rate = 8000;
+  const n = rate / 2; // half a second
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, n * 2, true);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+
+function usePlaybackSession() {
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = 'playback';
+  } catch { /* older Safari: rely on the keep-alive element */ }
+  if (!isIOS) return;
+  if (!keepAlive) {
+    keepAlive = new Audio(silentWavUrl());
+    keepAlive.loop = true;
+    keepAlive.setAttribute('playsinline', '');
+  }
+  keepAlive.play().catch(() => { /* blocked: Web Audio still plays, just not on silent */ });
+}
+
 // ---------- transport ----------
 
 async function play() {
   if (state === 'loading') return;
+  usePlaybackSession();
   if (state === 'idle') {
     state = 'loading';
     $('loading').classList.add('show');
@@ -195,6 +232,7 @@ function pause() {
   const now = engine.now();
   engine.releaseAll(now, 0.8);
   engine.setVolume(0, 1.5);
+  keepAlive?.pause();
   $('play').textContent = 'Play';
   setStatus();
   setMediaState();
