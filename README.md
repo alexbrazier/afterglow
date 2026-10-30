@@ -15,6 +15,15 @@ python3 -m http.server 8765
 Then open http://localhost:8765 and press **Play**. Samples (~4 MB) stream from the MusyngKite
 General-MIDI soundfont on first play, so an internet connection is needed.
 
+## Using it
+
+- **Timeline:** click or drag to jump anywhere in the current journey; `‹ ›` move between
+  journeys (past ones are kept, so you can go back).
+- **Instruments:** per-section level waves, the notes each is playing, mute (M) and solo (S).
+- **Keys:** `Space` play/pause, `←` `→` previous/next section, `I` instruments view.
+- **Seed:** `?seed=123` in the URL starts the same performance; "Copy link" shares it.
+- Settings are remembered in the browser.
+
 ## How it works
 
 - `src/composer.js` — the music. Each *journey* is a chain of sections whose harmony, theme,

@@ -185,6 +185,24 @@ export function sectionIntensity(sec, p) {
   return pts[pts.length - 1][1];
 }
 
+// One bar's intensity: the section's target, moved from the previous bar by at most the slew limit.
+function barIntensity(sec, b, energy, prevI, fresh = false) {
+  const p = sec.bars > 1 ? b / (sec.bars - 1) : 1;
+  const target = clamp(sectionIntensity(sec, p) + energy * (sec.id === 'dawn' ? 0.4 : 1), 0, 1);
+  if ((b === 0 && sec.cut) || fresh || prevI === undefined) return target;
+  return clamp(target, prevI - MAX_FALL, prevI + (sec.maxRise ?? MAX_RISE));
+}
+
+// Per-bar intensity across a whole journey played straight through (for drawing the timeline).
+export function journeyCurve(journey, energy) {
+  const out = [];
+  let prev;
+  for (const sec of journey.sections) {
+    for (let b = 0; b < sec.bars; b++) out.push(prev = barIntensity(sec, b, energy, prev));
+  }
+  return out;
+}
+
 export const SECTION_NAMES = {
   dawn: 'Dawn', stirring: 'Stirring', reflect: 'Reflection', rising: 'Rising',
   anthem: 'Anthem', fall: 'Falling away', resolve: 'Homecoming',
@@ -198,10 +216,10 @@ export class Composer {
     this.energy = 0;
     this.journeyNo = 0;
     this.journey = null;
+    this.history = []; // past journeys, so the timeline can go back to them
     this.secIdx = 0;
     this.barInSec = 0;
     this.prevVoicing = {};
-    this.skipPending = false;
   }
 
   pick(arr) { return arr[Math.floor(this.r() * arr.length)]; }
@@ -215,7 +233,7 @@ export class Composer {
   // ---------- form ----------
 
   _newJourney() {
-    if (this.journeyNo > 0) this.K = (this.K + this.pick(MODULATIONS)) % 12;
+    if (this.journeyNo > 0) this.K = (this.history[this.history.length - 1].K + this.pick(MODULATIONS)) % 12;
     this.journeyNo++;
     const bpm = 66 + Math.round(this.r() * 8);
     const sections = [];
@@ -226,8 +244,22 @@ export class Composer {
     if (this.r() < 0.3) sections.push(this._fall(2), this._anthem(true));
     sections.push(this._fall(), this._resolve());
     this.journey = { no: this.journeyNo, K: this.K, bpm, sections };
+    this.history.push(this.journey);
+    if (this.history.length > 50) this.history.shift();
     this.secIdx = 0;
     this.barInSec = 0;
+  }
+
+  // Continue into the next journey: one already in the history (after seeking back), or a new one.
+  _advanceJourney() {
+    const i = this.history.indexOf(this.journey);
+    if (i >= 0 && i < this.history.length - 1) {
+      this.journey = this.history[i + 1];
+      this.secIdx = 0;
+      this.barInSec = 0;
+    } else {
+      this._newJourney();
+    }
   }
 
   _section(id, list, int, extra = {}) {
@@ -389,36 +421,43 @@ export class Composer {
 
   // ---------- bar generation ----------
 
-  skipSection() { this.skipPending = true; }
-
-  // After a pause the sounding chord was released, so the next bar must re-voice it.
+  // After a pause or a seek the sounding chord was released, so the next bar must re-voice it.
   resync() { this.resyncPending = true; }
+
+  // Jump to a bar of a journey (the current one, or one from the history).
+  seek(journey, secIdx, bar = 0) {
+    this.journey = journey;
+    this.secIdx = secIdx;
+    this.barInSec = bar;
+    this.resyncPending = true;
+  }
+
+  // Start a journey after the given one: from the history if we went back, else a fresh one.
+  seekNextJourney(from) {
+    this.journey = from;
+    this._advanceJourney();
+    this.resyncPending = true;
+  }
 
   nextBar() {
     if (!this.journey) this._newJourney();
-    let sec = this.journey.sections[this.secIdx];
-    let skipped = this.resyncPending;
+    const fresh = this.resyncPending;
     this.resyncPending = false;
-    const resynced = skipped;
-    if (this.barInSec >= sec.bars || (this.skipPending && this.barInSec > 0)) {
-      skipped = this.skipPending || resynced;
-      this.skipPending = false;
+    let sec = this.journey.sections[this.secIdx];
+    if (this.barInSec >= sec.bars) {
       this.secIdx++;
       this.barInSec = 0;
-      if (this.secIdx >= this.journey.sections.length) this._newJourney();
+      if (this.secIdx >= this.journey.sections.length) this._advanceJourney();
       sec = this.journey.sections[this.secIdx];
     }
     const b = this.barInSec++;
-    const p = sec.bars > 1 ? b / (sec.bars - 1) : 1;
-    const target = clamp(sectionIntensity(sec, p) + this.energy * (sec.id === 'dawn' ? 0.4 : 1), 0, 1);
-    const drop = (b === 0 && sec.cut) || skipped || this.prevI === undefined;
-    const I = drop ? target : clamp(target, this.prevI - MAX_FALL, this.prevI + (sec.maxRise ?? MAX_RISE));
+    const I = barIntensity(sec, b, this.energy, this.prevI, fresh);
     this.prevI = I;
     const ch = sec.chords[b];
     const ev = [];
 
-    // A chord that started earlier in a skipped-into section still needs sounding.
-    const chordStart = sec.starts[b] || skipped;
+    // Landing mid-chord after a seek or pause: the chord still needs sounding.
+    const chordStart = sec.starts[b] || fresh;
     const beats = sec.starts[b] ? sec.lens[b] * 4 : this._remainingBars(sec, b) * 4;
     if (chordStart) this._chordLayers(ev, sec, ch, beats, I);
     else this._layerEntries(ev, sec, ch, beats, I);
@@ -440,9 +479,9 @@ export class Composer {
       key: keyName(this.journey.K),
       journey: this.journey,
       secIdx: this.secIdx,
-      cut: (b === 0 && sec.cut) || (skipped && !resynced),
-      // the fall lets the hall ring out; a manual skip clears faster
-      cutFade: b === 0 && sec.cut && !skipped ? 3 : 0.8,
+      // the fall lets the hall ring out (seeks release notes in the player instead)
+      cut: b === 0 && sec.cut && !fresh,
+      cutFade: 3,
       events: ev,
     };
   }

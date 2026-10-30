@@ -63,12 +63,16 @@ export class Engine {
       const input = new Tone.Gain(def.gain);
       const filter = new Tone.Filter({ type: 'lowpass', frequency: def.bright[0], rolloff: -12, Q: 0.4 });
       const panner = new Tone.Panner(def.pan);
+      const mute = new Tone.Gain(1);
       const send = new Tone.Gain(def.send);
-      input.chain(filter, panner);
-      panner.connect(this.dryBus);
-      panner.connect(send);
+      // metered before the mute so a muted lane still shows what it would be playing
+      const meter = new Tone.Meter({ normalRange: true, smoothing: 0.5 });
+      input.chain(filter, panner, mute);
+      panner.connect(meter);
+      mute.connect(this.dryBus);
+      mute.connect(send);
       send.connect(this.reverb);
-      this.ch[name] = { def, input, filter, node: input.input };
+      this.ch[name] = { def, input, filter, mute, meter, node: input.input, muted: false, solo: false };
     }
 
     const genReverb = this.reverb.generate();
@@ -85,6 +89,7 @@ export class Engine {
     for (const [file, set] of Object.entries(wanted)) for (const midi of set) jobs.push({ file, midi });
 
     let done = 0;
+    let failed = 0;
     const loadOne = async ({ file, midi }) => {
       try {
         const res = await fetch(`${SF_BASE}${file}-mp3/${sampleName(midi)}.mp3`);
@@ -93,6 +98,7 @@ export class Engine {
         (this.samples[file] ??= []).push({ midi, buf, trim: leadingSilence(buf) });
       } catch (e) {
         console.warn('sample failed', file, midi, e);
+        failed++;
       }
       onProgress(++done / jobs.length);
     };
@@ -100,6 +106,7 @@ export class Engine {
     await Promise.all(Array.from({ length: 10 }, async () => {
       while (queue.length) await loadOne(queue.shift());
     }));
+    if (failed > jobs.length / 2) throw new Error('could not download the instrument samples — check your connection');
     for (const list of Object.values(this.samples)) list.sort((a, b) => a.midi - b.midi);
     await genReverb;
   }
@@ -132,7 +139,7 @@ export class Engine {
     env.connect(ch.node);
 
     const bufEnd = buf.duration - 0.06;
-    const voice = { env, srcs: [], stopAt };
+    const voice = { env, srcs: [], stopAt, ch: chName, midi, start: time, noteEnd: holdEnd };
     let t = time;
     let off = trim;
     let first = true;
@@ -177,7 +184,30 @@ export class Engine {
     env.connect(ch.node);
     src.start(time, trim);
     src.stop(time + end + 0.1);
-    this._track({ env, srcs: [src], stopAt: time + end + 0.1 });
+    this._track({ env, srcs: [src], stopAt: time + end + 0.1, ch: chName, midi, start: time, noteEnd: time + Math.min(end, 0.45) });
+  }
+
+  // Notes currently sounding (or just struck) on each channel, for the instruments view.
+  activeNotes() {
+    const now = this.now();
+    const out = {};
+    for (const v of this.voices) {
+      if (v.start <= now && now < v.noteEnd) (out[v.ch] ??= new Set()).add(v.midi);
+    }
+    return out;
+  }
+
+  level(chName) { return this.ch[chName].meter.getValue(); }
+
+  setMute(chName, on) { this.ch[chName].muted = on; this._applyMutes(); }
+  setSolo(chName, on) { this.ch[chName].solo = on; this._applyMutes(); }
+
+  _applyMutes() {
+    const anySolo = Object.values(this.ch).some((c) => c.solo);
+    for (const c of Object.values(this.ch)) {
+      const audible = !c.muted && (!anySolo || c.solo);
+      c.mute.gain.rampTo(audible ? 1 : 0, 0.08);
+    }
   }
 
   _track(voice) {
@@ -199,6 +229,7 @@ export class Engine {
         try { s.stop(time + fade * 2); } catch { /* already stopped */ }
       }
       v.stopAt = time + fade * 2;
+      v.noteEnd = Math.min(v.noteEnd, time);
     }
   }
 
