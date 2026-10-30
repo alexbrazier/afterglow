@@ -279,6 +279,17 @@ for (const el of settingInputs()) {
   el.addEventListener('input', () => { applyControl(el); saveSettings(); });
 }
 
+// Each panel's Reset puts its sliders back to the defaults written in the HTML.
+for (const btn of document.querySelectorAll('[data-reset]')) {
+  btn.addEventListener('click', () => {
+    for (const el of btn.closest('.panel').querySelectorAll('input[type=range]')) {
+      el.value = el.defaultValue;
+      applyControl(el);
+    }
+    saveSettings();
+  });
+}
+
 $('seed').textContent = composer.seed;
 $('copySeed').addEventListener('click', async () => {
   const url = `${location.origin}${location.pathname}?seed=${composer.seed}`;
