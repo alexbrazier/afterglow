@@ -1,6 +1,7 @@
 /* global Tone */
-import { Engine, CHANNELS } from './engine.js';
-import { Composer, journeyCurve } from './composer.js';
+// ?v= is replaced with the commit on deploy so phones don't keep stale modules
+import { Engine, CHANNELS } from './engine.js?v=__BUILD__';
+import { Composer, journeyCurve } from './composer.js?v=__BUILD__';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -153,16 +154,28 @@ function prevJourney() {
 // ---------- iOS silent switch ----------
 
 // iOS plays Web Audio in the "ambient" audio session, which the ring/silent switch mutes.
-// Asking for a "playback" session (Safari 17+), and on iOS also holding a silent looping
-// <audio> element (which puts the page in the playback session on older versions), makes
-// it behave like a music app instead. Both must start inside the Play tap.
+// Two things move it to the "playback" session a music app uses:
+//  - navigator.audioSession.type = 'playback' (Safari 17+), set before any audio starts;
+//  - a near-silent looping <audio> element, started inside the Play tap (older iOS).
+// An AudioContext keeps the session it was running in, so once the element is playing the
+// context is suspended and resumed to re-attach it to the playback session (as unmute.js does).
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 let keepAlive = null;
+let keepAliveError = null;
+let contextCycled = false;
 
+function setSessionType() {
+  try {
+    if (navigator.audioSession && navigator.audioSession.type !== 'playback') navigator.audioSession.type = 'playback';
+  } catch { /* unsupported: the keep-alive element covers it */ }
+}
+setSessionType();
+
+// Half a second of 8 kHz audio at ±1 LSB (about -90 dB): inaudible, but not digital silence.
 function silentWavUrl() {
   const rate = 8000;
-  const n = rate / 2; // half a second
+  const n = rate / 2;
   const buf = new ArrayBuffer(44 + n * 2);
   const v = new DataView(buf);
   const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
@@ -170,20 +183,36 @@ function silentWavUrl() {
   str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
   v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
   str(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, i % 2 ? 1 : -1, true);
   return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 }
 
-function usePlaybackSession() {
+async function cycleContext() {
+  const raw = Tone.getContext().rawContext;
+  if (raw.state !== 'running') return;
   try {
-    if (navigator.audioSession) navigator.audioSession.type = 'playback';
-  } catch { /* older Safari: rely on the keep-alive element */ }
+    await raw.suspend();
+    await raw.resume();
+    contextCycled = true;
+  } catch (e) {
+    console.warn('could not restart audio context', e);
+  }
+}
+
+// Must be called synchronously inside the Play tap.
+function usePlaybackSession() {
+  setSessionType();
   if (!isIOS) return;
   if (!keepAlive) {
-    keepAlive = new Audio(silentWavUrl());
+    keepAlive = document.createElement('audio');
+    keepAlive.src = silentWavUrl();
     keepAlive.loop = true;
+    keepAlive.preload = 'auto';
     keepAlive.setAttribute('playsinline', '');
+    keepAlive.setAttribute('x-webkit-airplay', 'deny');
+    keepAlive.addEventListener('playing', () => { if (state === 'playing') cycleContext(); });
   }
-  keepAlive.play().catch(() => { /* blocked: Web Audio still plays, just not on silent */ });
+  keepAlive.play().then(() => { keepAliveError = null; }, (e) => { keepAliveError = e.name; });
 }
 
 // ---------- transport ----------
@@ -225,6 +254,7 @@ async function play() {
   setStatus();
   setMediaState();
   tick();
+  if (keepAlive && !keepAlive.paused && keepAlive.currentTime > 0) cycleContext();
 }
 
 function pause() {
@@ -329,6 +359,25 @@ for (const btn of document.querySelectorAll('[data-reset]')) {
 }
 
 $('seed').textContent = composer.seed;
+const build = document.querySelector('meta[name=build]')?.content ?? '';
+$('build').textContent = build.startsWith('__') ? 'dev' : build;
+
+// ?debug shows what the audio stack is doing (useful for phone-only problems).
+if (params.has('debug')) {
+  const pre = document.createElement('pre');
+  pre.className = 'debug';
+  document.querySelector('footer').after(pre);
+  setInterval(() => {
+    const raw = Tone.getContext().rawContext;
+    pre.textContent = [
+      `build ${$('build').textContent}  ios ${isIOS}  ua ${navigator.userAgent}`,
+      `audioSession ${navigator.audioSession ? `${navigator.audioSession.type} / ${navigator.audioSession.state}` : 'unsupported'}`,
+      `context ${raw.state} @ ${raw.sampleRate} Hz  restarted ${contextCycled}`,
+      `keepAlive ${keepAlive ? `paused ${keepAlive.paused}  t ${keepAlive.currentTime.toFixed(1)}  ready ${keepAlive.readyState}  error ${keepAliveError ?? keepAlive.error?.code ?? 'none'}` : 'not created'}`,
+      `voices ${engine.voices.size}  state ${state}`,
+    ].join('\n');
+  }, 500);
+}
 $('copySeed').addEventListener('click', async () => {
   const url = `${location.origin}${location.pathname}?seed=${composer.seed}`;
   try {
